@@ -1,35 +1,62 @@
 
- // Load environment variables
+// Load environment variables from .env
 require("dotenv").config();
 
-// Import Express and CORS
+// Import the required packages
 const express = require("express");
 const cors = require("cors");
+const { MongoClient } = require("mongodb");
 
-// Create Express application
+// Create the Express application
 const app = express();
 
-// Set the port
+// Set the server port
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS
+// Enable middleware
 app.use(cors());
-
-// Allow JSON requests
 app.use(express.json());
 
-// Test the backend
-app.get("/", (req, res) => {
+// Create a MongoDB client
+const client = new MongoClient(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 10000
+});
 
+// Test route
+app.get("/", (req, res) => {
     res.json({
         message: "CST3144 Backend API is running"
     });
-
 });
 
-// Start the server
-app.listen(PORT, () => {
+// Connect MongoDB before starting the server
+async function startServer() {
+    try {
+        // Connect to MongoDB Atlas
+        await client.connect();
 
-    console.log(`Server running at http://localhost:${PORT}`);
+        // Select the coursework database
+        const db = client.db(process.env.DB_NAME);
 
-});
+        // Check that the database responds
+        await db.command({ ping: 1 });
+
+        // Make the database available to Express routes
+        app.locals.db = db;
+
+        console.log("MongoDB connected successfully!");
+
+        // Start the Express server
+        app.listen(PORT, () => {
+            console.log(`Server running at http://localhost:${PORT}`);
+        });
+
+    } catch (error) {
+        console.error("MongoDB connection failed:", error.message);
+        await client.close();
+        process.exit(1);
+    }
+}
+
+// Run the application
+startServer();
