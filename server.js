@@ -28,7 +28,35 @@ app.get("/", (req, res) => {
         message: "CST3144 Backend API is running"
     });
 });
+// GET API: Retrieve all lessons from MongoDB
+app.get("/lessons", async (req, res) => {
 
+    try {
+
+        // Access the lessons collection
+        const collection = req.app.locals.db.collection("lessons");
+
+        // Retrieve lessons ordered by ID
+        const lessons = await collection
+            .find({})
+            .project({ _id: 0 })
+            .sort({ id: 1 })
+            .toArray();
+
+        // Send lessons to the frontend as JSON
+        res.json(lessons);
+
+    } catch (error) {
+
+        console.error("Error retrieving lessons:", error.message);
+
+        res.status(500).json({
+            message: "Failed to retrieve lessons"
+        });
+
+    }
+
+});
 // Connect MongoDB before starting the server
 async function startServer() {
     try {
