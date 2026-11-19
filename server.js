@@ -24,9 +24,11 @@ const client = new MongoClient(process.env.MONGODB_URI, {
 
 // Test route
 app.get("/", (req, res) => {
+
     res.json({
         message: "CST3144 Backend API is running"
     });
+
 });
 
 // GET API: Retrieve all lessons from MongoDB
@@ -59,98 +61,196 @@ app.get("/lessons", async (req, res) => {
 
 });
 
-// POST API: Save customer bookings to MongoDB
+// POST API: Save bookings and update available spaces
 app.post("/orders", async (req, res) => {
+
+    // Get customer information
+    const { name, phone, lessonIds } = req.body || {};
+
+    // Validate customer information and selected lessons
+    if (
+        typeof name !== "string" ||
+        !/^[A-Za-z]+(?: [A-Za-z]+)*$/.test(name.trim()) ||
+        typeof phone !== "string" ||
+        !/^[0-9]+$/.test(phone.trim()) ||
+        !Array.isArray(lessonIds) ||
+        lessonIds.length === 0 ||
+        !lessonIds.every(Number.isInteger)
+    ) {
+
+        return res.status(400).json({
+            message: "Invalid booking information"
+        });
+
+    }
+
+    // Count how many spaces are requested for each lesson
+    const quantities = new Map();
+
+    for (const id of lessonIds) {
+
+        quantities.set(
+            id,
+            (quantities.get(id) || 0) + 1
+        );
+
+    }
+
+    // Start a MongoDB transaction session
+    const session = client.startSession();
 
     try {
 
-        // Get customer details from the request
-        const { name, phone, lessonIds } = req.body;
-
-        // Validate customer information
-        if (
-            typeof name !== "string" ||
-            !/^[A-Za-z]+(?: [A-Za-z]+)*$/.test(name.trim()) ||
-            typeof phone !== "string" ||
-            !/^[0-9]+$/.test(phone.trim()) ||
-            !Array.isArray(lessonIds) ||
-            lessonIds.length === 0 ||
-            !lessonIds.every(Number.isInteger)
-        ) {
-
-            return res.status(400).json({
-                message: "Invalid booking information"
-            });
-
-        }
-
-        // Access MongoDB
+        // Access MongoDB collections
         const db = req.app.locals.db;
 
-        // Find the lessons selected by the customer
-        const lessons = await db.collection("lessons")
-            .find({
-                id: { $in: lessonIds }
-            })
-            .toArray();
+        const lessonsCollection = db.collection("lessons");
 
-        // Check that all requested lessons exist
-        if (lessons.length !== new Set(lessonIds).size) {
+        const ordersCollection = db.collection("orders");
 
-            return res.status(400).json({
-                message: "One or more lessons do not exist"
-            });
+        // Execute all database changes in one transaction
+        const booking = await session.withTransaction(async () => {
 
-        }
+            // Get unique lesson IDs
+            const uniqueIds = [...quantities.keys()];
 
-        // Calculate the cart total using MongoDB prices
-        const total = lessonIds.reduce((sum, id) => {
+            // Find selected lessons
+            const lessons = await lessonsCollection
+                .find(
+                    {
+                        id: { $in: uniqueIds }
+                    },
+                    {
+                        session
+                    }
+                )
+                .toArray();
 
-            const lesson = lessons.find(item => {
-                return item.id === id;
-            });
+            // Check that all lessons exist
+            if (lessons.length !== uniqueIds.length) {
 
-            return sum + lesson.price;
+                const error = new Error(
+                    "One or more lessons do not exist"
+                );
 
-        }, 0);
+                error.status = 400;
 
-        // Create the order document
-        const order = {
+                throw error;
 
-            name: name.trim(),
+            }
 
-            phone: phone.trim(),
+            // Create a lookup of lesson prices
+            const prices = new Map(
+                lessons.map(lesson => [
+                    lesson.id,
+                    lesson.price
+                ])
+            );
 
-            lessonIds: lessonIds,
+            // Calculate cart total
+            const total = lessonIds.reduce((sum, id) => {
 
-            total: total,
+                return sum + prices.get(id);
 
-            createdAt: new Date()
+            }, 0);
 
-        };
+            // Reduce available spaces for each selected lesson
+            for (const [id, quantity] of quantities) {
 
-        // Save the order in MongoDB
-        const result = await db.collection("orders")
-            .insertOne(order);
+                const result = await lessonsCollection.updateOne(
 
-        // Send booking confirmation
+                    {
+                        id: id,
+                        spaces: { $gte: quantity }
+                    },
+
+                    {
+                        $inc: { spaces: -quantity }
+                    },
+
+                    {
+                        session
+                    }
+
+                );
+
+                // Prevent bookings when spaces are insufficient
+                if (result.matchedCount !== 1) {
+
+                    const error = new Error(
+                        `Not enough spaces for lesson ${id}`
+                    );
+
+                    error.status = 409;
+
+                    throw error;
+
+                }
+
+            }
+
+            // Create the booking document
+            const order = {
+
+                name: name.trim(),
+
+                phone: phone.trim(),
+
+                lessonIds: lessonIds,
+
+                total: total,
+
+                createdAt: new Date()
+
+            };
+
+            // Save the booking in MongoDB
+            const result = await ordersCollection.insertOne(
+                order,
+                {
+                    session
+                }
+            );
+
+            // Return booking information
+            return {
+
+                orderId: result.insertedId,
+
+                total: total
+
+            };
+
+        });
+
+        // Send successful booking confirmation
         res.status(201).json({
 
             message: "Order saved successfully",
 
-            orderId: result.insertedId,
+            orderId: booking.orderId,
 
-            total: total
+            total: booking.total
 
         });
 
     } catch (error) {
 
-        console.error("Order error:", error.message);
+        console.error("Booking error:", error.message);
 
-        res.status(500).json({
-            message: "Failed to save order"
+        // Return an appropriate error response
+        res.status(error.status || 500).json({
+
+            message: error.status
+                ? error.message
+                : "Failed to save booking"
+
         });
+
+    } finally {
+
+        // Close the MongoDB transaction session
+        await session.endSession();
 
     }
 
@@ -222,9 +322,13 @@ app.put("/lessons/:id", async (req, res) => {
         // Retrieve the updated lesson information
         const updatedLesson = await collection.findOne(
 
-            { id: lessonId },
+            {
+                id: lessonId
+            },
 
-            { projection: { _id: 0 } }
+            {
+                projection: { _id: 0 }
+            }
 
         );
 
