@@ -1,5 +1,5 @@
 
- // Load environment variables from .env
+// Load environment variables from .env
 require("dotenv").config();
 
 // Import the required packages
@@ -150,6 +150,99 @@ app.post("/orders", async (req, res) => {
 
         res.status(500).json({
             message: "Failed to save order"
+        });
+
+    }
+
+});
+
+// PUT API: Update available spaces for a lesson
+app.put("/lessons/:id", async (req, res) => {
+
+    try {
+
+        // Get lesson ID from the URL
+        const lessonId = Number(req.params.id);
+
+        // Get the requested space change
+        const change = req.body?.change;
+
+        // Validate the lesson ID and space change
+        if (
+            !Number.isInteger(lessonId) ||
+            !Number.isInteger(change) ||
+            ![-1, 1].includes(change)
+        ) {
+
+            return res.status(400).json({
+                message: "Invalid lesson ID or space change"
+            });
+
+        }
+
+        // Access the lessons collection
+        const collection = req.app.locals.db.collection("lessons");
+
+        // Prevent spaces dropping below 0 or exceeding 5
+        const spaceCondition = change === -1
+            ? { $gt: 0 }
+            : { $lt: 5 };
+
+        // Update the lesson's available spaces
+        const result = await collection.updateOne(
+
+            {
+                id: lessonId,
+                spaces: spaceCondition
+            },
+
+            {
+                $inc: { spaces: change }
+            }
+
+        );
+
+        // Check whether the update was possible
+        if (result.matchedCount === 0) {
+
+            const lesson = await collection.findOne({
+                id: lessonId
+            });
+
+            return res.status(lesson ? 409 : 404).json({
+
+                message: lesson
+                    ? "Cannot change spaces beyond the allowed limit"
+                    : "Lesson not found"
+
+            });
+
+        }
+
+        // Retrieve the updated lesson information
+        const updatedLesson = await collection.findOne(
+
+            { id: lessonId },
+
+            { projection: { _id: 0 } }
+
+        );
+
+        // Return the updated lesson
+        res.json({
+
+            message: "Available spaces updated successfully",
+
+            lesson: updatedLesson
+
+        });
+
+    } catch (error) {
+
+        console.error("Lesson update error:", error.message);
+
+        res.status(500).json({
+            message: "Failed to update lesson"
         });
 
     }
