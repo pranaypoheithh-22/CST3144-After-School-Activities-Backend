@@ -1,5 +1,5 @@
 
-// Load environment variables from .env
+ // Load environment variables from .env
 require("dotenv").config();
 
 // Import the required packages
@@ -28,6 +28,7 @@ app.get("/", (req, res) => {
         message: "CST3144 Backend API is running"
     });
 });
+
 // GET API: Retrieve all lessons from MongoDB
 app.get("/lessons", async (req, res) => {
 
@@ -57,9 +58,109 @@ app.get("/lessons", async (req, res) => {
     }
 
 });
+
+// POST API: Save customer bookings to MongoDB
+app.post("/orders", async (req, res) => {
+
+    try {
+
+        // Get customer details from the request
+        const { name, phone, lessonIds } = req.body;
+
+        // Validate customer information
+        if (
+            typeof name !== "string" ||
+            !/^[A-Za-z]+(?: [A-Za-z]+)*$/.test(name.trim()) ||
+            typeof phone !== "string" ||
+            !/^[0-9]+$/.test(phone.trim()) ||
+            !Array.isArray(lessonIds) ||
+            lessonIds.length === 0 ||
+            !lessonIds.every(Number.isInteger)
+        ) {
+
+            return res.status(400).json({
+                message: "Invalid booking information"
+            });
+
+        }
+
+        // Access MongoDB
+        const db = req.app.locals.db;
+
+        // Find the lessons selected by the customer
+        const lessons = await db.collection("lessons")
+            .find({
+                id: { $in: lessonIds }
+            })
+            .toArray();
+
+        // Check that all requested lessons exist
+        if (lessons.length !== new Set(lessonIds).size) {
+
+            return res.status(400).json({
+                message: "One or more lessons do not exist"
+            });
+
+        }
+
+        // Calculate the cart total using MongoDB prices
+        const total = lessonIds.reduce((sum, id) => {
+
+            const lesson = lessons.find(item => {
+                return item.id === id;
+            });
+
+            return sum + lesson.price;
+
+        }, 0);
+
+        // Create the order document
+        const order = {
+
+            name: name.trim(),
+
+            phone: phone.trim(),
+
+            lessonIds: lessonIds,
+
+            total: total,
+
+            createdAt: new Date()
+
+        };
+
+        // Save the order in MongoDB
+        const result = await db.collection("orders")
+            .insertOne(order);
+
+        // Send booking confirmation
+        res.status(201).json({
+
+            message: "Order saved successfully",
+
+            orderId: result.insertedId,
+
+            total: total
+
+        });
+
+    } catch (error) {
+
+        console.error("Order error:", error.message);
+
+        res.status(500).json({
+            message: "Failed to save order"
+        });
+
+    }
+
+});
+
 // Connect MongoDB before starting the server
 async function startServer() {
+
     try {
+
         // Connect to MongoDB Atlas
         await client.connect();
 
@@ -76,14 +177,21 @@ async function startServer() {
 
         // Start the Express server
         app.listen(PORT, () => {
+
             console.log(`Server running at http://localhost:${PORT}`);
+
         });
 
     } catch (error) {
+
         console.error("MongoDB connection failed:", error.message);
+
         await client.close();
+
         process.exit(1);
+
     }
+
 }
 
 // Run the application
